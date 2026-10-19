@@ -1,0 +1,158 @@
+<?php
+/**
+ * @var \Laminas\View\Renderer\PhpRenderer $this
+ * @var \Laminas\Form\Form $form
+ * @var array $rows      [['hash', 'mine', 'session' => [id, user_id, modified], 'seen' => row|null]]
+ * @var array $users     [id => [name, email, role, is_active]]
+ * @var array $lastSignIn [user id => [ip, happened_at]]
+ * @var array $ended
+ * @var int $lifetime
+ * @var \DateTimeZone $tz
+ * @var string $otherHandler
+ */
+use ActiveSessions\Stdlib\Device;
+
+$h = fn($s) => $this->escapeHtml((string) $s);
+$this->htmlElement('body')->appendAttribute('class', 'active-sessions');
+echo $this->pageTitle('Signed-in sessions');
+$csrf = $this->formHidden($form->get('active_sessions_csrf'));
+$at = function (int $t) use ($tz): string {
+    if ($t <= 0) {
+        return '';
+    }
+    return (new \DateTime('@' . $t))->setTimezone($tz)->format('j M Y, H:i');
+};
+$ago = function (int $t): string {
+    $s = time() - $t;
+    if ($s < 90) { return 'just now'; }
+    if ($s < 5400) { return round($s / 60) . ' minutes ago'; }
+    if ($s < 129600) { return round($s / 3600) . ' hours ago'; }
+    return round($s / 86400) . ' days ago';
+};
+$who = function (int $uid) use ($users, $h): string {
+    $u = $users[$uid] ?? null;
+    if (!$u) {
+        return '<span class="as-mute">user #' . $uid . ' (deleted)</span>';
+    }
+    return '<strong>' . $h($u['name']) . '</strong><br><span class="as-mute">' . $h($u['email']) . ' · ' . $h(str_replace('_', ' ', $u['role'])) . ($u['is_active'] ? '' : ' · inactive') . '</span>';
+};
+$people = count(array_unique(array_map(fn($r) => $r['session']['user_id'], $rows)));
+$days = round($lifetime / 86400, 1);
+?>
+<style>
+.active-sessions{--as-line:#e3e5e8;--as-mute:#6b7280;--as-me:#e8f1fb;--as-meline:#1f5f99;--as-bad:#a3311f}
+.as-bar{border:1px solid var(--as-line);border-radius:10px;padding:12px 16px;margin:0 0 14px;background:#f7fafc}
+.as-bar strong{font-size:18px}
+.as-mute{color:var(--as-mute);font-size:12.5px}
+.as-table{width:100%;border-collapse:collapse;background:#fff}
+.as-table th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--as-mute);border-bottom:2px solid var(--as-line);padding:8px}
+.as-table td{border-bottom:1px solid var(--as-line);padding:9px 8px;vertical-align:top;font-size:14px}
+.as-table tr.me td{background:var(--as-me)}
+.as-table tr.me td:first-child{box-shadow:inset 4px 0 0 var(--as-meline)}
+.as-tag{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11.5px;font-weight:600;background:var(--as-meline);color:#fff;margin-left:4px}
+.as-table code{font-size:13px}
+.as-end button{background:#fff;color:var(--as-bad);border:1px solid var(--as-bad);border-radius:6px;padding:4px 10px;cursor:pointer}
+.as-end button:hover{background:var(--as-bad);color:#fff}
+.as-box{margin:24px 0 0}
+.as-box h3{margin:0 0 8px}
+@media (max-width:800px){
+  .as-table thead{display:none}
+  .as-table tr{display:block;border:1px solid var(--as-line);border-radius:8px;margin:0 0 10px}
+  .as-table td{display:block;border:0;padding:4px 10px}
+  .as-table td[data-l]::before{content:attr(data-l) ": ";color:var(--as-mute);font-size:12px}
+}
+</style>
+
+<div class="as-bar">
+  <strong><?= count($rows) ?> sign-in<?= count($rows) === 1 ? '' : 's' ?></strong>
+  by <?= $people ?> <?= $people === 1 ? 'person' : 'people' ?> still work.
+  <span class="as-mute">A sign-in ends by itself after <?= $h($days) ?> days unused. Ending one here sends that browser to the login page on its next click.</span>
+  <?php if ($otherHandler): ?>
+  <div class="as-mute"><strong>Note:</strong> this site keeps sessions with <?= $h($otherHandler) ?>, not in the database, so this list cannot see them.</div>
+  <?php endif; ?>
+</div>
+
+<table class="as-table">
+  <thead><tr><th>Who</th><th>Device</th><th>Address</th><th>Signed in</th><th>Last used</th><th></th></tr></thead>
+  <tbody>
+  <?php foreach ($rows as $r):
+      $s = $r['session'];
+      $seen = $r['seen'];
+      $uid = (int) $s['user_id'];
+      $ua = $seen ? (string) $seen['user_agent'] : '';
+      /* session.modified is written as a request ENDS, so for the request reading it the
+         list's own row is one request behind; what Recorder noted is newer then. */
+      $last = max((int) $s['modified'], $seen ? (int) $seen['last_seen'] : 0);
+  ?>
+    <tr class="<?= $r['mine'] ? 'me' : '' ?>" data-sid="<?= $h($r['hash']) ?>">
+      <td data-l="Who"><?= $who($uid) ?><?= $r['mine'] ? ' <span class="as-tag">you, this browser</span>' : '' ?></td>
+      <td data-l="Device">
+        <?php if ($seen && $ua !== ''): ?>
+          <span title="<?= $h($ua) ?>"><?= $h(Device::describe($ua)) ?></span>
+        <?php elseif ($seen): ?>
+          <span class="as-mute">the browser sent no name</span>
+        <?php else: ?>
+          <span class="as-mute">not seen yet</span>
+        <?php endif; ?>
+      </td>
+      <td data-l="Address">
+        <?php if ($seen && $seen['ip'] !== ''): ?>
+          <code><?= $h($seen['ip']) ?></code>
+          <?php if ($seen['first_ip'] !== '' && $seen['first_ip'] !== $seen['ip']): ?>
+            <br><span class="as-mute">first seen from <code><?= $h($seen['first_ip']) ?></code></span>
+          <?php endif; ?>
+        <?php elseif (isset($lastSignIn[$uid])): ?>
+          <span class="as-mute">not seen yet · this person last signed in from <code><?= $h($lastSignIn[$uid]['ip']) ?></code></span>
+        <?php else: ?>
+          <span class="as-mute">not seen yet</span>
+        <?php endif; ?>
+      </td>
+      <td data-l="Signed in">
+        <?php if ($seen && (int) $seen['first_seen'] > 0): ?>
+          <?= $h($at((int) $seen['first_seen'])) ?>
+        <?php else: ?>
+          <span class="as-mute">before this list began recording</span>
+        <?php endif; ?>
+      </td>
+      <td data-l="Last used">
+        <?= $h($ago($last)) ?><br>
+        <span class="as-mute"><?= $h($at($last)) ?> · ends <?= $h($at($last + $lifetime)) ?> if unused</span>
+      </td>
+      <td>
+        <?php if ($r['mine']): ?>
+          <span class="as-mute">To end this one, use Log out.</span>
+        <?php else: ?>
+          <form class="as-end" method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'end'])) ?>"
+                onsubmit="return confirm(<?= $h(json_encode('Sign out ' . ($users[$uid]['name'] ?? 'this person') . ' on ' . ($ua !== '' ? Device::describe($ua) : 'this sign-in') . '?')) ?>)">
+            <?= $csrf ?>
+            <input type="hidden" name="sid" value="<?= $h($r['hash']) ?>">
+            <button type="submit">Sign out</button>
+          </form>
+        <?php endif; ?>
+      </td>
+    </tr>
+  <?php endforeach; ?>
+  </tbody>
+</table>
+
+<div class="as-box">
+  <h3>Ended from this page (last 30 days)</h3>
+  <?php if (!$ended): ?>
+    <p class="as-mute">None.</p>
+  <?php else: ?>
+  <table class="as-table">
+    <thead><tr><th>When</th><th>Who was signed out</th><th>Device</th><th>Address</th><th>By</th></tr></thead>
+    <tbody>
+    <?php foreach ($ended as $e): ?>
+      <tr>
+        <td data-l="When"><?= $h($at((int) $e['ended'])) ?></td>
+        <td data-l="Who"><?= $h($users[(int) $e['user_id']]['name'] ?? ('#' . $e['user_id'])) ?></td>
+        <td data-l="Device"><?= $e['user_agent'] !== '' ? '<span title="' . $h($e['user_agent']) . '">' . $h(Device::describe($e['user_agent'])) . '</span>' : '<span class="as-mute">not seen</span>' ?></td>
+        <td data-l="Address"><?= $e['ip'] !== '' ? '<code>' . $h($e['ip']) . '</code>' : '<span class="as-mute">not seen</span>' ?></td>
+        <td data-l="By"><?= $h($users[(int) $e['ended_by']]['name'] ?? ('#' . $e['ended_by'])) ?></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+</div>
