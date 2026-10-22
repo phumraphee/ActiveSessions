@@ -10,6 +10,10 @@
  * @var array $limits    [short, long, roles]: how long a sign-in may last, by role (Limits; 0 = no limit)
  * @var \DateTimeZone $tz
  * @var string $otherHandler
+ * @var array $choices   [user id => '7d'|'30d'|'180d'|'max']: people with their own time (0.3)
+ * @var int $ceiling     the longest the server allows (Limits::ceiling)
+ * @var array $persons   users a time can be given to
+ * @var array $log       the changes of those, newest first
  */
 use ActiveSessions\Stdlib\Device;
 use ActiveSessions\Stdlib\Limits;
@@ -67,6 +71,14 @@ if ($limits['short'] <= 0 && $longPart === '') {
 .as-end button{background:#fff;color:var(--as-bad);border:1px solid var(--as-bad);border-radius:6px;padding:4px 10px;cursor:pointer}
 .as-end button:hover{background:var(--as-bad);color:#fff}
 .as-box{margin:24px 0 0}
+.as-keep{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11.5px;font-weight:600;background:#1d6b3a;color:#fff;margin-left:4px}
+.as-own{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11.5px;font-weight:600;background:#eef2f6;color:#333;margin-left:4px}
+.as-act{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.as-act form{margin:0}
+.as-act .as-k button{background:#fff;color:#1d6b3a;border:1px solid #1d6b3a;border-radius:6px;padding:4px 10px;cursor:pointer}
+.as-act .as-k button:hover{background:#1d6b3a;color:#fff}
+.as-person{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.as-person select{max-width:100%}
 .as-box h3{margin:0 0 8px}
 @media (max-width:800px){
   .as-table thead{display:none}
@@ -100,7 +112,9 @@ if ($limits['short'] <= 0 && $longPart === '') {
       $since = $seen ? (int) ($seen['since'] ?? 0) : 0;
       $limit = (int) ($r['limit'] ?? 0);
       $endUnused = $last + $lifetime;
-      if ($limit > 0 && $since > 0 && $since + $limit <= $endUnused) {
+      if ($r['kept'] && $since > 0) {
+          $ends = 'kept: ends ' . $at(min($since + $limit, $endUnused)) . ' (' . Limits::words($limit) . ' from sign-in, the longest the server allows, or unused)';
+      } elseif ($limit > 0 && $since > 0 && $since + $limit <= $endUnused) {
           $ends = 'ends ' . $at($since + $limit) . ' (' . Limits::words($limit) . ' from sign-in)';
       } elseif ($limit > 0 && $since <= 0) {
           $ends = 'time limit (' . Limits::words($limit) . ') starts at its next use';
@@ -109,7 +123,7 @@ if ($limits['short'] <= 0 && $longPart === '') {
       }
   ?>
     <tr class="<?= $r['mine'] ? 'me' : '' ?>" data-sid="<?= $h($r['hash']) ?>">
-      <td data-l="Who"><?= $who($uid) ?><?= $r['mine'] ? ' <span class="as-tag">you, this browser</span>' : '' ?></td>
+      <td data-l="Who"><?= $who($uid) ?><?= $r['mine'] ? ' <span class="as-tag">you, this browser</span>' : '' ?><?= $r['kept'] ? ' <span class="as-keep">kept on this device</span>' : '' ?><?= !$r['kept'] && ($r['why'] ?? '') === 'person' ? ' <span class="as-own">own time: ' . $h(Limits::choiceWords($choices[$uid] ?? null, $ceiling)) . '</span>' : '' ?></td>
       <td data-l="Device">
         <?php if ($seen && $ua !== ''): ?>
           <span title="<?= $h($ua) ?>"><?= $h(Device::describe($ua)) ?></span>
@@ -142,7 +156,13 @@ if ($limits['short'] <= 0 && $longPart === '') {
         <?= $h($ago($last)) ?><br>
         <span class="as-mute"><?= $h($at($last)) ?> · <?= $h($ends) ?></span>
       </td>
-      <td>
+      <td class="as-act">
+        <form class="as-k" method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'keep'])) ?>">
+          <?= $csrf ?>
+          <input type="hidden" name="sid" value="<?= $h($r['hash']) ?>">
+          <input type="hidden" name="on" value="<?= $r['kept'] ? '0' : '1' ?>">
+          <button type="submit" title="<?= $h($r['kept'] ? 'This device follows the rule again' : 'This device only, for the longest the server allows (' . Limits::words($ceiling) . ' from its sign-in); other devices of this person follow the rule') ?>"><?= $r['kept'] ? 'Stop keeping' : 'Keep this device signed in longest' ?></button>
+        </form>
         <?php if ($r['mine']): ?>
           <span class="as-mute">To end this one, use Log out.</span>
         <?php else: ?>
@@ -158,6 +178,69 @@ if ($limits['short'] <= 0 && $longPart === '') {
   <?php endforeach; ?>
   </tbody>
 </table>
+
+<div class="as-box">
+  <h3>One person's own time</h3>
+  <p class="as-mute">Instead of their role's: for every device of theirs, from their next click. The longest the server allows is <strong><?= $h(Limits::words($ceiling)) ?></strong> (the shorter of the session's lifetime unused and its cookie's, as this server runs): nothing here goes past it, and a time set before it was shortened is cut to it. A device kept above has that time whatever is set here.</p>
+  <form class="as-person" method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'person'])) ?>">
+    <?= $csrf ?>
+    <select name="user" required aria-label="Person"><option value="">Choose a person…</option>
+      <?php foreach ($persons as $u): ?><option value="<?= (int) $u['id'] ?>"><?= $h($u['name'] . ' · ' . $u['email'] . ' · ' . str_replace('_', ' ', $u['role']) . (isset($choices[(int) $u['id']]) ? ' · now ' . Limits::choiceWords($choices[(int) $u['id']], $ceiling) : '')) ?></option><?php endforeach; ?>
+    </select>
+    <select name="limit" aria-label="Sign-in lasts">
+      <option value="role">As their role (the rule above)</option>
+      <?php foreach (Limits::offered($ceiling) as $k): ?>
+      <option value="<?= $h($k) ?>"><?= $h($k === 'max' ? 'Longest the server allows (' . Limits::words($ceiling) . ')' : Limits::words(Limits::CHOICES[$k])) ?></option>
+      <?php endforeach; ?>
+    </select>
+    <button type="submit">Set</button>
+  </form>
+  <?php if ($choices): ?>
+  <table class="as-table" style="margin-top:10px">
+    <thead><tr><th>Person</th><th>Sign-ins last</th><th></th></tr></thead>
+    <tbody>
+    <?php foreach ($choices as $cuid => $c): ?>
+      <tr>
+        <td data-l="Person"><?= $who((int) $cuid) ?></td>
+        <td data-l="Sign-ins last"><?= $h(Limits::choiceWords($c, $ceiling)) ?></td>
+        <td class="as-act">
+          <form method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'person'])) ?>"><?= $csrf ?>
+            <input type="hidden" name="user" value="<?= (int) $cuid ?>"><input type="hidden" name="limit" value="role">
+            <button type="submit">As their role again</button></form>
+          <form class="as-end" method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'end-all'])) ?>"
+                onsubmit="return confirm(<?= $h(json_encode('Sign out ' . ($users[(int) $cuid]['name'] ?? 'this person') . ' on every device?')) ?>)"><?= $csrf ?>
+            <input type="hidden" name="user" value="<?= (int) $cuid ?>"><button type="submit">Sign out on every device</button></form>
+        </td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  <?php endif; ?>
+  <?php $many = []; foreach ($rows as $r) { if (!$r['mine']) { $many[(int) $r['session']['user_id']] = ($many[(int) $r['session']['user_id']] ?? 0) + 1; } } ?>
+  <?php if ($many): ?>
+  <form class="as-person as-end" style="margin-top:10px" method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'end-all'])) ?>"
+        onsubmit="return confirm('Sign out this person on every device, kept ones too?')">
+    <?= $csrf ?>
+    <select name="user" required aria-label="Person"><option value="">Sign out one person everywhere…</option>
+      <?php foreach ($many as $muid => $n): ?><option value="<?= (int) $muid ?>"><?= $h(($users[$muid]['name'] ?? '#' . $muid) . ' · ' . $n . ' sign-in' . ($n === 1 ? '' : 's')) ?></option><?php endforeach; ?>
+    </select>
+    <button type="submit">Sign out on every device</button>
+  </form>
+  <?php endif; ?>
+</div>
+
+<div class="as-box">
+  <h3>Changes to sign-in times</h3>
+  <?php if (!$log): ?>
+    <p class="as-mute">None.</p>
+  <?php else: ?>
+  <ul class="as-mute">
+    <?php foreach ($log as $l): ?>
+      <li><?= $h($at((int) $l['at'])) ?> · <?= $h($users[(int) $l['user']]['name'] ?? ('#' . $l['user'])) ?> · <?= $h($l['what']) ?> · <?= $h((int) $l['by'] === 0 ? 'the rule' : ($users[(int) $l['by']]['name'] ?? ('#' . $l['by']))) ?></li>
+    <?php endforeach; ?>
+  </ul>
+  <?php endif; ?>
+</div>
 
 <div class="as-box">
   <h3>Ended from this page (last 30 days)</h3>

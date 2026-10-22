@@ -111,6 +111,32 @@ rule as set, and each sign-in says when it ends: its time limit, or unused, whic
 `config/local.config.php` (`'session' => ['config' => [...]]`) at least 7 days, or a sign-in
 ends when PHP throws its session away; the settings page warns when it is shorter.
 
+## One person, one device (0.3)
+
+Two exceptions to the rule above, set by a global admin on the sessions page. **Nothing set =
+0.2 exactly.**
+
+- **One person's own time** — 7 days, 30 days, 180 days or *the longest the server allows*,
+  instead of their role's, for every device of theirs, from their next click (user setting
+  `activesessions_user_limit`). "As their role again" removes it.
+- **One device kept** — "Keep this device signed in longest" on a row of the list: that one
+  sign-in lasts the longest the server allows, from its sign-in; the same person's other devices
+  follow the rule. The row shows the device and browser, the address and when it was last used,
+  to tell devices apart. It is kept only while the person stays active and has the role they had
+  when it was set (`keep_role`): a role changed or the person deactivated drops it, and their next
+  request follows the rule again.
+
+**The longest the server allows** is read as the site runs: the shorter of the session's lifetime
+unused (`gc_maxlifetime`) and its cookie's (`cookie_lifetime`), from `config/local.config.php`
+(`'session' => ['config' => …]`), else PHP's. The page says it. Only the times shorter than it are
+offered; a time set before the server's was shortened is cut to it, and the page says so. There
+is no "for ever".
+
+A device kept beats the person's own time, which beats the role. **Sign out** (one sign-in, or
+"Sign out on every device" for one person) ends kept sign-ins too. An exception never lets in a
+person Omeka has deactivated: their next request is signed out. Every change is in "Changes to
+sign-in times" on the page (setting `activesessions_log`, latest 200).
+
 ## Signing a session out
 
 **Sign out** marks the sign-in ended in `active_sessions_seen` first, then deletes its row

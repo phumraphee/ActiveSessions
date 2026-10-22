@@ -131,6 +131,40 @@ class Sessions
         return $s['user_id'];
     }
 
+    /**
+     * End every working sign-in of one person (but $keepHash, the admin's own). Returns how many.
+     */
+    public function endAllOf(int $userId, int $byUser, string $keepHash = ''): int
+    {
+        $n = 0;
+        foreach ($this->signedIn() as $hash => $s) {
+            if ($s['user_id'] === $userId && !hash_equals($hash, $keepHash) && $this->end($hash, $byUser)) {
+                $n++;
+            }
+        }
+        return $n;
+    }
+
+    /** Keep one working sign-in on its device (on) or stop (off). Returns its user id, 0 = no such sign-in. */
+    public function keep(string $hash, bool $on, int $byUser, string $role): int
+    {
+        $all = $this->signedIn();
+        if (!isset($all[$hash])) {
+            return 0;
+        }
+        $s = $all[$hash];
+        if ($on) {
+            $this->conn->executeStatement(
+                'INSERT INTO active_sessions_seen (sid, user_id, first_seen, last_seen, keep, keep_by, keep_role) VALUES (?, ?, 0, 0, ?, ?, ?)'
+                . ' ON DUPLICATE KEY UPDATE keep = VALUES(keep), keep_by = VALUES(keep_by), keep_role = VALUES(keep_role)',
+                [$hash, $s['user_id'], time(), $byUser, $role]
+            );
+        } else {
+            $this->conn->executeStatement('UPDATE active_sessions_seen SET keep = NULL, keep_by = NULL, keep_role = NULL WHERE sid = ?', [$hash]);
+        }
+        return $s['user_id'];
+    }
+
     /** Rows for sessions that can no longer be alive, kept a week past that for the record. */
     public function forgetOld(): void
     {

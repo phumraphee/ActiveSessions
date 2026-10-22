@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-10-22
+
+- **One person's own time**: a global admin gives a person 7 days, 30 days, 180 days or the
+  longest the server allows, instead of their role's (sessions page, "One person's own time").
+- **One device kept**: "Keep this device signed in longest" / "Stop keeping" on each sign-in of
+  the list; that sign-in lasts the longest the server allows from its sign-in, the person's other
+  devices follow the rule. Dropped when the person's role changes or they are deactivated.
+- **The longest the server allows** is read as the site runs (the shorter of `gc_maxlifetime` and
+  `cookie_lifetime`); nothing is set past it, longer times are not offered, and one set before is
+  cut to it (the page says so). No "for ever".
+- "Sign out on every device" for one person. Sign out ends kept sign-ins too.
+- An exception never lets in a deactivated person: their next request is signed out.
+- Every change noted ("Changes to sign-in times"). Nothing set = 0.2 exactly.
+- Upgrade from 0.2.0: Modules → Active Sessions → Upgrade (adds `keep`, `keep_by`, `keep_role`).
+
 ## 0.2.0 — 2026-10-22
 
 - **How long a sign-in lasts, by role**, kept on the server: everybody 12 hours, the roles you

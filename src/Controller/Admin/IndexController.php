@@ -61,12 +61,36 @@ class IndexController extends AbstractActionController
             }
         }
 
-        /* how long each sign-in may last, by its person's role (Limits; 0 = no limit) */
+        /* how long each sign-in may last (Limits; 0 = no limit): kept on its device, the
+           person's own time, else their role's */
         $settings = $this->services->get('Omeka\Settings');
+        $choices = Limits::personChoices($conn);
+        $ceiling = Limits::ceiling($this->services->get('Config'));
         $rows = [];
         foreach ($all as $h => $s) {
-            $limit = Limits::forRole((string) ($users[(int) $s['user_id']]['role'] ?? ''), $settings);
-            $rows[] = ['hash' => $h, 'mine' => hash_equals($h, $mine), 'session' => $s, 'seen' => $seen[$h] ?? null, 'limit' => $limit];
+            $uid = (int) $s['user_id'];
+            $role = (string) ($users[$uid]['role'] ?? '');
+            $keep = Limits::keepHolds($seen[$h] ?? null, $role, (bool) ($users[$uid]['is_active'] ?? false));
+            [$limit, $why] = Limits::effective($role, $choices[$uid] ?? null, $keep, $settings, $ceiling);
+            $rows[] = ['hash' => $h, 'mine' => hash_equals($h, $mine), 'session' => $s, 'seen' => $seen[$h] ?? null,
+                'limit' => $limit, 'why' => $why, 'kept' => $keep];
+        }
+        /* the people a global admin may give their own time: everybody active, and anybody with one */
+        $people = $conn->fetchAllAssociative('SELECT id, name, email, role, is_active FROM user WHERE is_active = 1 OR id IN (?) ORDER BY name',
+            [array_keys($choices) ?: [0]], [\Doctrine\DBAL\Connection::PARAM_INT_ARRAY]);
+        foreach ($people as $u) {
+            $users[(int) $u['id']] = $users[(int) $u['id']] ?? $u;
+        }
+        $log = array_slice(Limits::history($conn), 0, 30);
+        foreach ($log as $l) {
+            foreach ([(int) $l['user'], (int) $l['by']] as $id) {
+                if ($id > 0 && !isset($users[$id])) {
+                    $u = $conn->fetchAssociative('SELECT id, name, email, role, is_active FROM user WHERE id = ?', [$id]);
+                    if ($u) {
+                        $users[$id] = $u;
+                    }
+                }
+            }
         }
         $longRoles = $settings->get(Limits::S_ROLES, Limits::ROLES);
         usort($rows, function ($a, $b) {
@@ -85,6 +109,10 @@ class IndexController extends AbstractActionController
                 'roles' => is_array($longRoles) ? array_values(array_filter($longRoles, 'is_string')) : [],
             ],
             'form' => $this->form(),
+            'choices' => $choices,
+            'ceiling' => $ceiling,
+            'persons' => $people,
+            'log' => $log,
             'tz' => $this->timeZone(),
             'me' => $this->identity(),
             /* Omeka keeps sessions in its `session` table unless a save handler is set in
@@ -114,6 +142,97 @@ class IndexController extends AbstractActionController
         } else {
             $name = (string) $this->services->get('Omeka\Connection')->fetchOne('SELECT name FROM user WHERE id = ?', [$uid]);
             $this->messenger()->addSuccess(sprintf('Signed out: %s. Their next click goes to the login page.', $name !== '' ? $name : '#' . $uid));
+        }
+        return $this->redirect()->toRoute('admin/active-sessions');
+    }
+
+    /** Keep one sign-in on its device for the longest the server allows, or stop (POST sid, on=1|0). */
+    public function keepAction()
+    {
+        if ($no = $this->guard(true)) {
+            return $no;
+        }
+        $hash = (string) $this->params()->fromPost('sid', '');
+        $on = (string) $this->params()->fromPost('on', '') === '1';
+        if (!preg_match('/^[0-9a-f]{64}$/', $hash)) {
+            $this->messenger()->addError('That sign-in was not found. Load the page again.');
+            return $this->redirect()->toRoute('admin/active-sessions');
+        }
+        $store = $this->store();
+        $all = $store->signedIn();
+        $conn = $this->services->get('Omeka\Connection');
+        $u = isset($all[$hash]) ? $conn->fetchAssociative('SELECT id, name, role, is_active FROM user WHERE id = ?', [$all[$hash]['user_id']]) : false;
+        if (!$u) {
+            $this->messenger()->addWarning('That sign-in had already ended.');
+            return $this->redirect()->toRoute('admin/active-sessions');
+        }
+        if ($on && Limits::ceiling($this->services->get('Config')) <= 0) {
+            $this->messenger()->addError('The server sets no session lifetime to keep a device for.');
+            return $this->redirect()->toRoute('admin/active-sessions');
+        }
+        if ($on && !$u['is_active']) {
+            $this->messenger()->addError('That person is deactivated: their sign-in cannot be kept.');
+            return $this->redirect()->toRoute('admin/active-sessions');
+        }
+        $uid = $store->keep($hash, $on, (int) $this->identity()->getId(), (string) $u['role']);
+        $seen = $store->seen([$hash]);
+        $device = isset($seen[$hash]) && $seen[$hash]['user_agent'] !== '' ? \ActiveSessions\Stdlib\Device::describe((string) $seen[$hash]['user_agent']) : 'a sign-in not seen yet';
+        $ip = isset($seen[$hash]) ? (string) $seen[$hash]['ip'] : '';
+        $ceiling = Limits::ceiling($this->services->get('Config'));
+        Limits::log($conn, ($on ? 'device kept for the longest the server allows (' . Limits::words($ceiling) . '): ' : 'device no longer kept: ') . $device . ($ip !== '' ? ' · ' . $ip : ''),
+            $uid, (int) $this->identity()->getId(), time());
+        $this->messenger()->addSuccess(sprintf($on ? 'Kept signed in: %1$s on %2$s, for %3$s from its sign-in (the longest the server allows).' : 'No longer kept: %1$s on %2$s follows the rule again.',
+            (string) $u['name'], $device, Limits::words($ceiling)));
+        return $this->redirect()->toRoute('admin/active-sessions');
+    }
+
+    /** One person's own time (POST user, limit = role or one of Limits::offered()). */
+    public function personAction()
+    {
+        if ($no = $this->guard(true)) {
+            return $no;
+        }
+        $uid = (int) $this->params()->fromPost('user', 0);
+        $choice = (string) $this->params()->fromPost('limit', 'role');
+        $conn = $this->services->get('Omeka\Connection');
+        $u = $uid > 0 ? $conn->fetchAssociative('SELECT id, name, is_active FROM user WHERE id = ?', [$uid]) : false;
+        $ceiling = Limits::ceiling($this->services->get('Config'));
+        if (!$u || ($choice !== 'role' && !in_array($choice, Limits::offered($ceiling), true))) {
+            $this->messenger()->addError('Choose a person and a time.');
+            return $this->redirect()->toRoute('admin/active-sessions');
+        }
+        $was = Limits::personChoice($conn, $uid);
+        if ($choice === 'role') {
+            $conn->executeStatement('DELETE FROM user_setting WHERE id = ? AND user_id = ?', [Limits::U_LIMIT, $uid]);
+        } elseif ($was === null) {
+            $conn->executeStatement('INSERT INTO user_setting (id, user_id, value) VALUES (?, ?, ?)', [Limits::U_LIMIT, $uid, json_encode($choice)]);
+        } else {
+            $conn->executeStatement('UPDATE user_setting SET value = ? WHERE id = ? AND user_id = ?', [json_encode($choice), Limits::U_LIMIT, $uid]);
+        }
+        $now = $choice === 'role' ? null : $choice;
+        if ($was !== $now) {
+            Limits::log($conn, 'person: ' . Limits::choiceWords($was, $ceiling) . ' → ' . Limits::choiceWords($now, $ceiling), $uid, (int) $this->identity()->getId(), time());
+        }
+        $this->messenger()->addSuccess(sprintf('%1$s: sign-ins last %2$s, from their next click.', (string) $u['name'], Limits::choiceWords($now, $ceiling)));
+        return $this->redirect()->toRoute('admin/active-sessions');
+    }
+
+    /** Sign out every sign-in of one person, kept devices too (but the admin's own current one). */
+    public function endAllAction()
+    {
+        if ($no = $this->guard(true)) {
+            return $no;
+        }
+        $uid = (int) $this->params()->fromPost('user', 0);
+        $me = (int) $this->identity()->getId();
+        $n = $uid > 0 ? $this->store()->endAllOf($uid, $me, Sessions::hash((string) session_id())) : 0;
+        $conn = $this->services->get('Omeka\Connection');
+        $name = (string) $conn->fetchOne('SELECT name FROM user WHERE id = ?', [$uid]);
+        if ($n) {
+            Limits::log($conn, 'signed out on every device (' . $n . ')', $uid, $me, time());
+            $this->messenger()->addSuccess(sprintf('Signed out on every device (%1$d): %2$s.', $n, $name !== '' ? $name : '#' . $uid));
+        } else {
+            $this->messenger()->addWarning('Nothing to sign out.');
         }
         return $this->redirect()->toRoute('admin/active-sessions');
     }

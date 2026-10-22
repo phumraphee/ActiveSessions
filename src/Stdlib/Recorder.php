@@ -24,7 +24,7 @@ class Recorder
      * @param mixed $settings Omeka's settings (the time limits, Limits); null = no limits
      * @return bool true when this request's sign-in was just ended by its time limit
      */
-    public static function run(Connection $conn, AuthenticationServiceInterface $auth, $settings = null, ?int $now = null): bool
+    public static function run(Connection $conn, AuthenticationServiceInterface $auth, $settings = null, ?int $now = null, int $ceiling = 0): bool
     {
         if (PHP_SAPI === 'cli') {
             return false;
@@ -52,7 +52,7 @@ class Recorder
             return false;
         }
         $hash = Sessions::hash($sid);
-        $row = $conn->fetchAssociative('SELECT user_id, ip, user_agent, last_seen, ended, since FROM active_sessions_seen WHERE sid = ?', [$hash]);
+        $row = $conn->fetchAssociative('SELECT user_id, ip, user_agent, last_seen, ended, since, keep, keep_role FROM active_sessions_seen WHERE sid = ?', [$hash]);
         if ($row && $row['ended'] !== null) {
             /* Ended from the sessions page, and come back: a request that was still running
                when the row was deleted wrote it again. Sign it out now. The empty Laminas_Auth
@@ -61,8 +61,25 @@ class Recorder
             return false;
         }
         $now = $now ?? time();
-        /* The time limit (Limits): a sign-in this rule has not seen yet starts its clock now. */
-        $limit = $settings !== null && method_exists($user, 'getRole') ? Limits::forRole((string) $user->getRole(), $settings) : 0;
+        /* The time limit (Limits): a sign-in this rule has not seen yet starts its clock now.
+           0.3: this device kept, or this person's own time, before their role's. */
+        $limit = 0;
+        $why = 'role';
+        if ($settings !== null && method_exists($user, 'getRole')) {
+            $role = (string) $user->getRole();
+            $active = !method_exists($user, 'isActive') || (bool) $user->isActive();
+            $keep = Limits::keepHolds($row ?: null, $role, $active);
+            if (!$keep && $row && $row['keep'] !== null) {
+                Limits::dropKeep($conn, $hash, $uid, $now);
+            }
+            [$limit, $why] = Limits::effective($role, Limits::personChoice($conn, $uid), $keep, $settings, $ceiling);
+            /* an exception never lets in somebody Omeka has deactivated */
+            if ($why !== 'role' && !$active) {
+                Limits::endOne($conn, $hash, $uid, $now);
+                $auth->clearIdentity();
+                return false;
+            }
+        }
         $since = $row ? (int) $row['since'] : 0;
         if ($settings !== null && Limits::over($since, $limit, $now)) {
             Limits::endOne($conn, $hash, $uid, $now);
@@ -91,7 +108,7 @@ class Recorder
      * Somebody has just signed in (Omeka's user.login, also sent by modules that sign in
      * the same way): this new session's clock starts now, and its cookie ends with it.
      */
-    public static function signedIn(Connection $conn, $user, $settings, ?int $now = null): void
+    public static function signedIn(Connection $conn, $user, $settings, ?int $now = null, int $ceiling = 0): void
     {
         if (PHP_SAPI === 'cli' || session_status() !== PHP_SESSION_ACTIVE || !is_object($user) || !method_exists($user, 'getId')) {
             return;
@@ -110,6 +127,9 @@ class Recorder
             . ' last_seen = VALUES(last_seen), since = VALUES(since), ended = NULL, ended_by = NULL',
             [Sessions::hash($sid), (int) $user->getId(), $ip, $ip, $ua, $now, $now, $now]
         );
-        Limits::cookie($now, Limits::forRole(method_exists($user, 'getRole') ? (string) $user->getRole() : '', $settings));
+        /* a new sign-in is not kept on its device yet; the person's own time counts */
+        [$limit, $why] = Limits::effective(method_exists($user, 'getRole') ? (string) $user->getRole() : '',
+            Limits::personChoice($conn, (int) $user->getId()), false, $settings, $ceiling);
+        Limits::cookie($now, $limit);
     }
 }

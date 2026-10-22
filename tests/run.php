@@ -91,5 +91,33 @@ check('words: 12 hours', Limits::words(43200), '12 hours');
 check('words: 7 days', Limits::words(604800), '7 days');
 check('words: 2 minutes', Limits::words(120), '2 minutes');
 
+/* 0.3: a device kept, a person's own time */
+$none = new class([]) {
+    private $v;
+    public function __construct(array $v) { $this->v = $v; }
+    public function get($id, $default = null) { return array_key_exists($id, $this->v) ? $this->v[$id] : $default; }
+};
+$C = 2592000;   // a ceiling of 30 days
+check('effective: nothing set = the role (0.2)', Limits::effective('editor', null, false, $none, $C), [43200, 'role']);
+check('effective: the person\'s 7 days', Limits::effective('editor', '7d', false, $none, $C), [604800, 'person']);
+check('effective: the person\'s 30 days', Limits::effective('editor', '30d', false, $none, $C), [2592000, 'person']);
+check('effective: 180 days cut to the ceiling', Limits::effective('global_admin', '180d', false, $none, $C), [2592000, 'person']);
+check('effective: the longest the server allows = the ceiling', Limits::effective('editor', 'max', false, $none, $C), [2592000, 'person']);
+check('effective: no "for ever" any more (an unknown choice = the role)', Limits::effective('editor', 'forever', false, $none, $C), [43200, 'role']);
+check('effective: a kept device = the ceiling, beats the person', Limits::effective('editor', '7d', true, $none, $C), [2592000, 'device']);
+check('effective: no ceiling known, no device', Limits::effective('editor', null, true, $none, 0), [43200, 'role']);
+check('offered: under 30 days', Limits::offered($C), ['7d', 'max']);
+check('offered: under 400 days', Limits::offered(34560000), ['7d', '30d', '180d', 'max']);
+check('ceiling: the shorter of gc and cookie', Limits::ceiling(['session' => ['config' => ['gc_maxlifetime' => 2592000, 'cookie_lifetime' => 1209600]]]), 1209600);
+check('ceiling: cookie 0 (until the browser closes) says nothing', Limits::ceiling(['session' => ['config' => ['gc_maxlifetime' => 2592000, 'cookie_lifetime' => 0]]]), 2592000);
+$kept = ['keep' => 1000, 'keep_role' => 'editor'];
+check('keep: holds for the same role, active', Limits::keepHolds($kept, 'editor', true), true);
+check('keep: dropped when the role changed', Limits::keepHolds($kept, 'author', true), false);
+check('keep: dropped when deactivated', Limits::keepHolds($kept, 'editor', false), false);
+check('keep: not set', Limits::keepHolds(['keep' => null, 'keep_role' => null], 'editor', true), false);
+check('keep: no row', Limits::keepHolds(null, 'editor', true), false);
+check('choice words', [Limits::choiceWords(null, $C), Limits::choiceWords('7d', $C), Limits::choiceWords('max', $C), Limits::choiceWords('180d', $C)],
+    ['as the role', '7 days', 'the longest the server allows (30 days)', '30 days (set to 180 days, cut to the longest the server allows)']);
+
 echo "tests/run.php: $pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

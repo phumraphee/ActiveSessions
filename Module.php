@@ -33,6 +33,11 @@ use ActiveSessions\Stdlib\Recorder;
  * 12 hours, the roles chosen in the settings (global_admin) 7 days, by default. A sign-in
  * past its time is ended like one ended from the page. The session's own lifetime
  * (gc_maxlifetime in config/local.config.php) must be at least the longest of these.
+ *
+ * 0.3: on the sessions page a global admin may give one person their own time (7, 30, 180
+ * days or the longest the server allows) and keep one device signed in for the longest the
+ * server allows — never past it (Stdlib\Limits::ceiling); Sign out ends those too, and either
+ * for a person Omeka has deactivated ends at their next request.
  */
 class Module extends AbstractModule
 {
@@ -53,14 +58,15 @@ class Module extends AbstractModule
                 $conn = $sm->get('Omeka\Connection');
                 $auth = $sm->get('Omeka\AuthenticationService');
                 $role = $auth->hasIdentity() && method_exists($auth->getIdentity(), 'getRole') ? (string) $auth->getIdentity()->getRole() : '';
-                if (Recorder::run($conn, $auth, $settings)) {
+                $ceiling = Limits::ceiling($sm->get('Config'));
+                if (Recorder::run($conn, $auth, $settings, null, $ceiling)) {
                     $sm->get('ControllerPluginManager')->get('messenger')->addWarning(sprintf(
                         'Your sign-in ended after %s, the time a sign-in lasts here. Please log in again.', // @translate
                         Limits::words(Limits::forRole($role, $settings))
                     ));
                 }
                 if (PHP_SAPI !== 'cli' && time() - (int) $settings->get(Limits::S_SWEPT, 0) >= Limits::SWEEP_EVERY) {
-                    Limits::sweep($conn, $settings, $this->sessionLifetime(), time());
+                    Limits::sweep($conn, $settings, $this->sessionLifetime(), time(), false, $ceiling);
                 }
             } catch (\Throwable $t) {
                 /* Noting a sign-in must never cost anybody the page. */
@@ -79,7 +85,7 @@ class Module extends AbstractModule
                 if (!is_object($user)) {
                     $user = $sm->get('Omeka\AuthenticationService')->getIdentity();
                 }
-                Recorder::signedIn($sm->get('Omeka\Connection'), $user, $sm->get('Omeka\Settings'));
+                Recorder::signedIn($sm->get('Omeka\Connection'), $user, $sm->get('Omeka\Settings'), null, Limits::ceiling($sm->get('Config')));
             } catch (\Throwable $t) {
                 error_log('ActiveSessions: ' . $t->getMessage());
             }
@@ -161,6 +167,9 @@ class Module extends AbstractModule
                 ended INT DEFAULT NULL,
                 ended_by INT DEFAULT NULL,
                 since INT DEFAULT NULL,
+                keep INT DEFAULT NULL,
+                keep_by INT DEFAULT NULL,
+                keep_role VARCHAR(64) DEFAULT NULL,
                 PRIMARY KEY(sid),
                 INDEX active_sessions_seen_user (user_id),
                 INDEX active_sessions_seen_ended (ended)
@@ -178,6 +187,13 @@ class Module extends AbstractModule
         if (!(int) $has) {
             $conn->executeStatement('ALTER TABLE active_sessions_seen ADD since INT DEFAULT NULL');
         }
+        /* 0.3.0: a sign-in kept on its device (Stdlib\Limits). Empty: nothing kept, as 0.2. */
+        foreach (['keep' => 'INT DEFAULT NULL', 'keep_by' => 'INT DEFAULT NULL', 'keep_role' => 'VARCHAR(64) DEFAULT NULL'] as $col => $type) {
+            $has = $conn->fetchOne("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'active_sessions_seen' AND COLUMN_NAME = ?", [$col]);
+            if (!(int) $has) {
+                $conn->executeStatement('ALTER TABLE active_sessions_seen ADD ' . $col . ' ' . $type);
+            }
+        }
     }
 
     public function uninstall(ServiceLocatorInterface $services)
@@ -186,8 +202,9 @@ class Module extends AbstractModule
         require_once __DIR__ . '/src/Stdlib/Limits.php';
         /* Nothing in it is needed once the module is gone: Omeka's own sign-ins go on as before. */
         $services->get('Omeka\Connection')->executeStatement('DROP TABLE IF EXISTS active_sessions_seen');
-        foreach ([Limits::S_SHORT, Limits::S_LONG, Limits::S_ROLES, Limits::S_SWEPT] as $id) {
+        foreach ([Limits::S_SHORT, Limits::S_LONG, Limits::S_ROLES, Limits::S_SWEPT, Limits::S_LOG] as $id) {
             $services->get('Omeka\Settings')->delete($id);
         }
+        $services->get('Omeka\Connection')->executeStatement('DELETE FROM user_setting WHERE id = ?', [Limits::U_LIMIT]);
     }
 }
