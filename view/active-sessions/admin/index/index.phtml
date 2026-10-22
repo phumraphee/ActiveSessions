@@ -6,11 +6,13 @@
  * @var array $users     [id => [name, email, role, is_active]]
  * @var array $lastSignIn [user id => [ip, happened_at]]
  * @var array $ended
- * @var int $lifetime
+ * @var int $lifetime   seconds a session lives unused (gc_maxlifetime)
+ * @var array $limits    [short, long, roles]: how long a sign-in may last, by role (Limits; 0 = no limit)
  * @var \DateTimeZone $tz
  * @var string $otherHandler
  */
 use ActiveSessions\Stdlib\Device;
+use ActiveSessions\Stdlib\Limits;
 
 $h = fn($s) => $this->escapeHtml((string) $s);
 $this->htmlElement('body')->appendAttribute('class', 'active-sessions');
@@ -38,6 +40,17 @@ $who = function (int $uid) use ($users, $h): string {
 };
 $people = count(array_unique(array_map(fn($r) => $r['session']['user_id'], $rows)));
 $days = round($lifetime / 86400, 1);
+/* the rule, as set: "A sign-in lasts 12 hours from when it began (global admin: 7 days), and
+   or after 30 days unused if that comes first." */
+$roleNames = implode(', ', array_map(fn($x) => str_replace('_', ' ', $x), $limits['roles']));
+$longPart = $limits['roles'] && $limits['long'] !== $limits['short']
+    ? ' (' . $roleNames . ': ' . ($limits['long'] > 0 ? Limits::words($limits['long']) : 'no time limit') . ')' : '';
+if ($limits['short'] <= 0 && $longPart === '') {
+    $rule = 'A sign-in ends by itself after ' . $days . ' days unused.';
+} else {
+    $rule = ($limits['short'] > 0 ? 'A sign-in lasts ' . Limits::words($limits['short']) . ' from when it began' : 'A sign-in has no time limit')
+        . $longPart . ', or after ' . $days . ' days unused if that comes first.';
+}
 ?>
 <style>
 .active-sessions{--as-line:#e3e5e8;--as-mute:#6b7280;--as-me:#e8f1fb;--as-meline:#1f5f99;--as-bad:#a3311f}
@@ -66,7 +79,7 @@ $days = round($lifetime / 86400, 1);
 <div class="as-bar">
   <strong><?= count($rows) ?> sign-in<?= count($rows) === 1 ? '' : 's' ?></strong>
   by <?= $people ?> <?= $people === 1 ? 'person' : 'people' ?> still work.
-  <span class="as-mute">A sign-in ends by itself after <?= $h($days) ?> days unused. Ending one here sends that browser to the login page on its next click.</span>
+  <span class="as-mute"><?= $h($rule) ?> Ending one here sends that browser to the login page on its next click.</span>
   <?php if ($otherHandler): ?>
   <div class="as-mute"><strong>Note:</strong> this site keeps sessions with <?= $h($otherHandler) ?>, not in the database, so this list cannot see them.</div>
   <?php endif; ?>
@@ -83,6 +96,17 @@ $days = round($lifetime / 86400, 1);
       /* session.modified is written as a request ENDS, so for the request reading it the
          list's own row is one request behind; what Recorder noted is newer then. */
       $last = max((int) $s['modified'], $seen ? (int) $seen['last_seen'] : 0);
+      /* when it ends: its time limit (from since) or unused, whichever comes first */
+      $since = $seen ? (int) ($seen['since'] ?? 0) : 0;
+      $limit = (int) ($r['limit'] ?? 0);
+      $endUnused = $last + $lifetime;
+      if ($limit > 0 && $since > 0 && $since + $limit <= $endUnused) {
+          $ends = 'ends ' . $at($since + $limit) . ' (' . Limits::words($limit) . ' from sign-in)';
+      } elseif ($limit > 0 && $since <= 0) {
+          $ends = 'time limit (' . Limits::words($limit) . ') starts at its next use';
+      } else {
+          $ends = 'ends ' . $at($endUnused) . ' if unused';
+      }
   ?>
     <tr class="<?= $r['mine'] ? 'me' : '' ?>" data-sid="<?= $h($r['hash']) ?>">
       <td data-l="Who"><?= $who($uid) ?><?= $r['mine'] ? ' <span class="as-tag">you, this browser</span>' : '' ?></td>
@@ -116,7 +140,7 @@ $days = round($lifetime / 86400, 1);
       </td>
       <td data-l="Last used">
         <?= $h($ago($last)) ?><br>
-        <span class="as-mute"><?= $h($at($last)) ?> · ends <?= $h($at($last + $lifetime)) ?> if unused</span>
+        <span class="as-mute"><?= $h($at($last)) ?> · <?= $h($ends) ?></span>
       </td>
       <td>
         <?php if ($r['mine']): ?>
@@ -149,7 +173,7 @@ $days = round($lifetime / 86400, 1);
         <td data-l="Who"><?= $h($users[(int) $e['user_id']]['name'] ?? ('#' . $e['user_id'])) ?></td>
         <td data-l="Device"><?= $e['user_agent'] !== '' ? '<span title="' . $h($e['user_agent']) . '">' . $h(Device::describe($e['user_agent'])) . '</span>' : '<span class="as-mute">not seen</span>' ?></td>
         <td data-l="Address"><?= $e['ip'] !== '' ? '<code>' . $h($e['ip']) . '</code>' : '<span class="as-mute">not seen</span>' ?></td>
-        <td data-l="By"><?= $h($users[(int) $e['ended_by']]['name'] ?? ('#' . $e['ended_by'])) ?></td>
+        <td data-l="By"><?= $h((int) $e['ended_by'] === 0 ? 'Time limit' : ($users[(int) $e['ended_by']]['name'] ?? ('#' . $e['ended_by']))) ?></td>
       </tr>
     <?php endforeach; ?>
     </tbody>

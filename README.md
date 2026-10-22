@@ -86,6 +86,31 @@ computer on that network can send those headers itself and have any address writ
 The address is then only a hint. This is the same rule Revision History uses, copied rather
 than shared so that each works without the other.
 
+## How long a sign-in lasts (0.2)
+
+A sign-in ends after a set time, by role: **everybody 12 hours**, the roles you choose
+(**global admin**) **7 days** — both in the module's settings (0 = no limit). The time is kept
+on the server, not only in the cookie: each sign-in's clock (`since` in `active_sessions_seen`)
+starts when the person logs in (Omeka's `user.login` event — the password form and modules that
+sign in the same way), and
+
+- on each of the person's requests, a sign-in past its time is signed out there and then (the
+  login page says why);
+- every few minutes, on anybody's request, every sign-in past its time is ended and its session
+  row deleted, so pages outside Omeka that read the `session` table see it gone too;
+- the session cookie is sent again to expire when the sign-in ends; a cookie kept longer by hand
+  changes nothing.
+
+Sign-ins that began before 0.2 (or before a change of the settings' roles) start their clock
+when first seen, so installing or upgrading never signs everybody out at once. The sessions page
+lists sign-ins ended this way with "Time limit" as who ended them. Its line at the top says the
+rule as set, and each sign-in says when it ends: its time limit, or unused, whichever comes first
+("time limit starts at its next use" for one not seen since).
+
+**The session must live as long as the longest limit**: `gc_maxlifetime` in
+`config/local.config.php` (`'session' => ['config' => [...]]`) at least 7 days, or a sign-in
+ends when PHP throws its session away; the settings page warns when it is shorter.
+
 ## Signing a session out
 
 **Sign out** marks the sign-in ended in `active_sessions_seen` first, then deletes its row

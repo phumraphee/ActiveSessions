@@ -6,6 +6,7 @@ use Laminas\Form\Form;
 use Laminas\Mvc\Controller\AbstractActionController;
 use Laminas\View\Model\ViewModel;
 use Psr\Container\ContainerInterface;
+use ActiveSessions\Stdlib\Limits;
 use ActiveSessions\Stdlib\Sessions;
 
 class IndexController extends AbstractActionController
@@ -60,10 +61,14 @@ class IndexController extends AbstractActionController
             }
         }
 
+        /* how long each sign-in may last, by its person's role (Limits; 0 = no limit) */
+        $settings = $this->services->get('Omeka\Settings');
         $rows = [];
         foreach ($all as $h => $s) {
-            $rows[] = ['hash' => $h, 'mine' => hash_equals($h, $mine), 'session' => $s, 'seen' => $seen[$h] ?? null];
+            $limit = Limits::forRole((string) ($users[(int) $s['user_id']]['role'] ?? ''), $settings);
+            $rows[] = ['hash' => $h, 'mine' => hash_equals($h, $mine), 'session' => $s, 'seen' => $seen[$h] ?? null, 'limit' => $limit];
         }
+        $longRoles = $settings->get(Limits::S_ROLES, Limits::ROLES);
         usort($rows, function ($a, $b) {
             return [$b['mine'], $b['session']['modified']] <=> [$a['mine'], $a['session']['modified']];
         });
@@ -74,6 +79,11 @@ class IndexController extends AbstractActionController
             'lastSignIn' => $lastSignIn,
             'ended' => $ended,
             'lifetime' => $store->lifetime(),
+            'limits' => [
+                'short' => Limits::forRole('', $settings),
+                'long' => is_array($longRoles) && $longRoles ? Limits::forRole((string) reset($longRoles), $settings) : 0,
+                'roles' => is_array($longRoles) ? array_values(array_filter($longRoles, 'is_string')) : [],
+            ],
             'form' => $this->form(),
             'tz' => $this->timeZone(),
             'me' => $this->identity(),

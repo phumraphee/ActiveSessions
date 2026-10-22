@@ -15,10 +15,11 @@ spl_autoload_register(function ($c) {
     }
 });
 if (!class_exists('Doctrine\DBAL\Connection')) {
-    eval('namespace Doctrine\DBAL; class Connection { const PARAM_STR_ARRAY = 102; }');
+    eval('namespace Doctrine\DBAL; class Connection { const PARAM_STR_ARRAY = 102; const PARAM_INT_ARRAY = 101; }');
 }
 
 use ActiveSessions\Stdlib\Device;
+use ActiveSessions\Stdlib\Limits;
 use ActiveSessions\Stdlib\Sessions;
 
 $pass = 0;
@@ -66,6 +67,29 @@ $uas = [
 foreach ($uas as $ua => $want) {
     check('browser: ' . ($want === '' ? '(empty)' : $want), Device::describe((string) $ua), $want);
 }
+
+// how long a sign-in lasts, by role (Limits)
+$settings = new class([]) {
+    private $v;
+    public function __construct(array $v) { $this->v = $v; }
+    public function get($id, $default = null) { return array_key_exists($id, $this->v) ? $this->v[$id] : $default; }
+};
+check('limit: defaults, everybody 12 h', Limits::forRole('site_admin', $settings), 43200);
+check('limit: defaults, global_admin 7 days', Limits::forRole('global_admin', $settings), 604800);
+$set = new class([Limits::S_SHORT => 600, Limits::S_LONG => 3600, Limits::S_ROLES => ['editor']]) {
+    private $v;
+    public function __construct(array $v) { $this->v = $v; }
+    public function get($id, $default = null) { return array_key_exists($id, $this->v) ? $this->v[$id] : $default; }
+};
+check('limit: set, a listed role', Limits::forRole('editor', $set), 3600);
+check('limit: set, global_admin not listed', Limits::forRole('global_admin', $set), 600);
+check('over: before its time', Limits::over(1000, 600, 1599), false);
+check('over: at its time', Limits::over(1000, 600, 1600), true);
+check('over: no clock yet', Limits::over(0, 600, 999999), false);
+check('over: no limit', Limits::over(1000, 0, 999999), false);
+check('words: 12 hours', Limits::words(43200), '12 hours');
+check('words: 7 days', Limits::words(604800), '7 days');
+check('words: 2 minutes', Limits::words(120), '2 minutes');
 
 echo "tests/run.php: $pass passed, $fail failed\n";
 exit($fail ? 1 : 0);
