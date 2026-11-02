@@ -165,10 +165,10 @@ class Sessions
         return $s['user_id'];
     }
 
-    /** Rows for sessions that can no longer be alive, kept a week past that for the record. */
-    public function forgetOld(): void
+    /** Rows for sessions that can no longer be alive, kept a week past that for the record. Returns how many. */
+    public function forgetOld(): int
     {
-        $this->conn->executeStatement(
+        return (int) $this->conn->executeStatement(
             'DELETE FROM active_sessions_seen WHERE GREATEST(last_seen, COALESCE(ended, 0)) < ?',
             [time() - $this->lifetime - 7 * 86400]
         );

@@ -101,6 +101,17 @@ sign in the same way), and
 - the session cookie is sent again to expire when the sign-in ends; a cookie kept longer by hand
   changes nothing.
 
+0.3.1: the sweep also runs from cron, so it does not wait for somebody to open an Omeka page —
+every 5 minutes, as the web server's user:
+
+```
+*/5 * * * * php /path/to/omeka/modules/ActiveSessions/bin/sweep.php >> /path/to/omeka/logs/active-sessions.log 2>&1
+```
+
+It prints a line only when it ended a sign-in or forgot old records (those of sessions gone for
+over a week, as the sessions page does); exit 1 on an error. Without cron, the web sweep goes on
+as before.
+
 Sign-ins that began before 0.2 (or before a change of the settings' roles) start their clock
 when first seen, so installing or upgrading never signs everybody out at once. The sessions page
 lists sign-ins ended this way with "Time limit" as who ended them. Its line at the top says the

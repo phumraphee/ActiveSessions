@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-11-02
+
+- **Sweep from cron**: `bin/sweep.php` ends every sign-in past its time and forgets old records
+  without waiting for somebody to open an Omeka page. Pages outside Omeka that read the `session`
+  table (a site's own staff pages) no longer take an expired sign-in for a working one on a quiet
+  day. Run it every 5 minutes as the web server's user (README). Silent unless it did something;
+  exit 1 on an error. The web sweep is unchanged and still runs without cron.
+- `Sessions::forgetOld()` returns how many records it forgot.
+- Upgrade from 0.3.0: Modules → Active Sessions → Upgrade (no database change).
+
 ## 0.3.0 — 2026-10-22
 
 - **One person's own time**: a global admin gives a person 7 days, 30 days, 180 days or the
