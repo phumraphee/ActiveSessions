@@ -14,6 +14,7 @@
  * @var int $ceiling     the longest the server allows (Limits::ceiling)
  * @var array $persons   users a time can be given to
  * @var array $log       the changes of those, newest first
+ * @var array $table     the `session` table: rows, bytes, oldest, cleaned [at, deleted]|null (0.4.0)
  */
 use ActiveSessions\Stdlib\Device;
 use ActiveSessions\Stdlib\Limits;
@@ -229,6 +230,18 @@ if ($limits['short'] <= 0 && $longPart === '') {
   <?php endif; ?>
 </div>
 
+<?php $others = count(array_filter($rows, fn($r) => !$r['mine'])); ?>
+<?php if ($others): ?>
+<div class="as-box">
+  <form class="as-person as-end" method="post" action="<?= $h($this->url('admin/active-sessions', ['action' => 'end-everyone'])) ?>"
+        onsubmit="return confirm(<?= $h(json_encode('Sign out everybody else (' . $others . ' sign-in' . ($others === 1 ? '' : 's') . ', kept devices too)? Yours, in this browser, stays.')) ?>)">
+    <?= $csrf ?>
+    <button type="submit">Sign out everybody else</button>
+    <span class="as-mute">Every sign-in in the list but yours, in this browser: after a password leak, or before work on the site.</span>
+  </form>
+</div>
+<?php endif; ?>
+
 <div class="as-box">
   <h3>Changes to sign-in times</h3>
   <?php if (!$log): ?>
@@ -239,6 +252,24 @@ if ($limits['short'] <= 0 && $longPart === '') {
       <li><?= $h($at((int) $l['at'])) ?> · <?= $h($users[(int) $l['user']]['name'] ?? ('#' . $l['user'])) ?> · <?= $h($l['what']) ?> · <?= $h((int) $l['by'] === 0 ? 'the rule' : ($users[(int) $l['by']]['name'] ?? ('#' . $l['by']))) ?></li>
     <?php endforeach; ?>
   </ul>
+  <?php endif; ?>
+</div>
+
+<div class="as-box">
+  <h3>Session table</h3>
+  <?php if ($otherHandler): ?>
+    <p class="as-mute">Sessions are not kept in the database on this site.</p>
+  <?php else: ?>
+  <p>
+    <strong><?= number_format($table['rows']) ?></strong> row<?= $table['rows'] === 1 ? '' : 's' ?>
+    (<?= $h(number_format($table['bytes'] / 1048576, 1)) ?> MB of data), signed-in or not: visitors have sessions too.
+    <?php if ($table['oldest'] > 0): ?>Oldest used <?= $h($at($table['oldest'])) ?>.<?php endif; ?>
+  </p>
+  <p class="as-mute">
+    A row unused for <?= $h($days) ?> days can never be used again and is deleted
+    <?= $table['cleaned'] ? '— last ' . $h($at($table['cleaned']['at'])) . ', ' . number_format($table['cleaned']['deleted']) . ' row' . ($table['cleaned']['deleted'] === 1 ? '' : 's') : '— not run yet' ?>.
+    With bin/sweep.php in cron this runs every 5 minutes; without it, once an hour on a page request.
+  </p>
   <?php endif; ?>
 </div>
 

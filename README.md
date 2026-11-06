@@ -164,6 +164,21 @@ written-back sign-in can appear in the list again; ending it again does no harm.
 The form carries Omeka's own kind of token (valid for an hour), so a page from somewhere else
 cannot end a sign-in. A global admin cannot end their own current sign-in here.
 
+## Unused sessions and the session table (0.4)
+
+Omeka keeps every session in its `session` table — a visitor's too, not only sign-ins. PHP is
+meant to delete the ones unused for longer than `gc_maxlifetime`, but only when its own clean-up
+runs, and many servers (Debian and Ubuntu among them) switch that off (`session.gc_probability = 0`).
+Then the table only grows.
+
+This module deletes those rows: `bin/sweep.php` does it on every run (cron, every 5 minutes), in
+batches of 5,000; without cron, one batch an hour on somebody's page request. The cut is the
+session's lifetime unused, so a sign-in that still works is never touched. The sessions page shows
+the table — rows, size, the oldest — and when the clean-up last ran and how many rows it deleted.
+
+**Sign out everybody else** ends every sign-in in the list but your own current one, kept devices
+too: after a password leak, or before work on the site. It is noted under "Changes to sign-in times".
+
 ## With Revision History
 
 Optional. When [Revision History](https://github.com/phumraphee/RevisionHistory) is installed,

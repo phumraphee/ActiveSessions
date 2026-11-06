@@ -20,6 +20,8 @@ use Doctrine\DBAL\Connection;
  */
 class Sessions
 {
+    const S_CLEANED = 'activesessions_last_cleanup';   // {at, deleted}: the last deleteOld()
+
     /** @var Connection */
     protected $conn;
 
@@ -163,6 +165,66 @@ class Sessions
             $this->conn->executeStatement('UPDATE active_sessions_seen SET keep = NULL, keep_by = NULL, keep_role = NULL WHERE sid = ?', [$hash]);
         }
         return $s['user_id'];
+    }
+
+    /**
+     * Sign out every working sign-in but $keepHash (the admin's own current one), kept devices too.
+     * Returns how many.
+     */
+    public function endEveryone(int $byUser, string $keepHash = ''): int
+    {
+        $n = 0;
+        foreach ($this->signedIn() as $hash => $s) {
+            if (!hash_equals($hash, $keepHash) && $this->end($hash, $byUser)) {
+                $n++;
+            }
+        }
+        return $n;
+    }
+
+    /**
+     * Delete `session` rows unused for longer than a session lives (0.4.0). Nobody can use them
+     * again: PHP would refuse them as too old, but deletes them only when its own clean-up runs,
+     * and many servers (Debian and Ubuntu among them) switch that off (session.gc_probability = 0)
+     * and leave it to a cron job that cleans files, not a database table. Without this the table
+     * only grows: a row for every visitor's every visit.
+     *
+     * A sign-in still working is never touched: the cut is the session's lifetime unused, the same
+     * one signedIn() reads. In batches, so a large first clean-up does not hold the table for long;
+     * $rounds > 0 stops after that many (the web's own run, inside somebody's request).
+     * Returns how many rows went, and notes the run for the sessions page.
+     */
+    public function deleteOld(int $batch = 5000, int $rounds = 0): int
+    {
+        $cut = time() - $this->lifetime;
+        $n = 0;
+        do {
+            $done = (int) $this->conn->executeStatement('DELETE FROM session WHERE modified < ? LIMIT ' . max(1, $batch), [$cut]);
+            $n += $done;
+        } while ($done >= $batch && --$rounds !== 0);
+        $note = json_encode(['at' => time(), 'deleted' => $n]);
+        if ($this->conn->executeStatement('UPDATE setting SET value = ? WHERE id = ?', [$note, self::S_CLEANED]) === 0
+            && $this->conn->fetchOne('SELECT 1 FROM setting WHERE id = ?', [self::S_CLEANED]) === false) {
+            $this->conn->executeStatement('INSERT INTO setting (id, value) VALUES (?, ?)', [self::S_CLEANED, $note]);
+        }
+        return $n;
+    }
+
+    /** Unix time of the last deleteOld(), 0 = never. */
+    public function lastCleanup(): int
+    {
+        $v = $this->conn->fetchOne('SELECT value FROM setting WHERE id = ?', [self::S_CLEANED]);
+        return $v === false ? 0 : (int) ((json_decode((string) $v, true) ?: [])['at'] ?? 0);
+    }
+
+    /** The `session` table for the sessions page: rows, bytes of data, the oldest row, the last clean-up. */
+    public function tableSize(): array
+    {
+        $r = $this->conn->fetchAssociative('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(data)), 0) AS bytes, MIN(modified) AS oldest FROM session');
+        $last = $this->conn->fetchOne('SELECT value FROM setting WHERE id = ?', [self::S_CLEANED]);
+        $last = $last === false ? null : json_decode((string) $last, true);
+        return ['rows' => (int) $r['n'], 'bytes' => (int) $r['bytes'], 'oldest' => (int) $r['oldest'],
+            'cleaned' => is_array($last) ? ['at' => (int) ($last['at'] ?? 0), 'deleted' => (int) ($last['deleted'] ?? 0)] : null];
     }
 
     /** Rows for sessions that can no longer be alive, kept a week past that for the record. Returns how many. */

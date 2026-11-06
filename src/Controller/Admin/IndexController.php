@@ -103,6 +103,7 @@ class IndexController extends AbstractActionController
             'lastSignIn' => $lastSignIn,
             'ended' => $ended,
             'lifetime' => $store->lifetime(),
+            'table' => $store->tableSize(),
             'limits' => [
                 'short' => Limits::forRole('', $settings),
                 'long' => is_array($longRoles) && $longRoles ? Limits::forRole((string) reset($longRoles), $settings) : 0,
@@ -233,6 +234,23 @@ class IndexController extends AbstractActionController
             $this->messenger()->addSuccess(sprintf('Signed out on every device (%1$d): %2$s.', $n, $name !== '' ? $name : '#' . $uid));
         } else {
             $this->messenger()->addWarning('Nothing to sign out.');
+        }
+        return $this->redirect()->toRoute('admin/active-sessions');
+    }
+
+    /** Sign out every sign-in on the site but the admin's own current one, kept devices too (0.4.0). */
+    public function endEveryoneAction()
+    {
+        if ($no = $this->guard(true)) {
+            return $no;
+        }
+        $me = (int) $this->identity()->getId();
+        $n = $this->store()->endEveryone($me, Sessions::hash((string) session_id()));
+        if ($n) {
+            Limits::log($this->services->get('Omeka\Connection'), 'signed out everybody else (' . $n . ' sign-in' . ($n === 1 ? '' : 's') . ')', $me, $me, time());
+            $this->messenger()->addSuccess(sprintf('Signed out: %d sign-in(s). Only yours, in this browser, still works.', $n));
+        } else {
+            $this->messenger()->addWarning('Nothing to sign out: yours is the only sign-in.');
         }
         return $this->redirect()->toRoute('admin/active-sessions');
     }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-11-06
+
+- **Unused sessions deleted**: `session` rows unused for longer than a session lives (`gc_maxlifetime`)
+  are deleted, in batches. PHP deletes them only when its own clean-up runs, and many servers switch
+  that off (`session.gc_probability = 0`), so the table only grew — a row for every visit. Done by
+  `bin/sweep.php` (every 5 minutes from cron); without cron, one batch an hour on a page request.
+  A working sign-in is never touched.
+- **Session table** on the sessions page: rows, size, the oldest, and the last clean-up.
+- **Sign out everybody else**: one button ends every sign-in but your own current one, kept devices
+  too (noted in "Changes to sign-in times").
+- Upgrade from 0.3.x: Modules → Active Sessions → Upgrade (no database change).
+
 ## 0.3.2 — 2026-11-06
 
 - A comment in the code rewritten in plain terms. No change in behaviour; no database change.

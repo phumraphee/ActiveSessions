@@ -67,6 +67,11 @@ class Module extends AbstractModule
                 }
                 if (PHP_SAPI !== 'cli' && time() - (int) $settings->get(Limits::S_SWEPT, 0) >= Limits::SWEEP_EVERY) {
                     Limits::sweep($conn, $settings, $this->sessionLifetime(), time(), false, $ceiling);
+                    /* 0.4.0: unused session rows, at most hourly and one batch here (cron does the rest) */
+                    $store = new \ActiveSessions\Stdlib\Sessions($conn, $this->sessionLifetime());
+                    if (time() - $store->lastCleanup() >= 3600) {
+                        $store->deleteOld(2000, 1);
+                    }
                 }
             } catch (\Throwable $t) {
                 /* Noting a sign-in must never cost anybody the page. */
@@ -200,9 +205,10 @@ class Module extends AbstractModule
     {
         /* Omeka does not load a module's classes while it uninstalls it */
         require_once __DIR__ . '/src/Stdlib/Limits.php';
+        require_once __DIR__ . '/src/Stdlib/Sessions.php';
         /* Nothing in it is needed once the module is gone: Omeka's own sign-ins go on as before. */
         $services->get('Omeka\Connection')->executeStatement('DROP TABLE IF EXISTS active_sessions_seen');
-        foreach ([Limits::S_SHORT, Limits::S_LONG, Limits::S_ROLES, Limits::S_SWEPT, Limits::S_LOG] as $id) {
+        foreach ([Limits::S_SHORT, Limits::S_LONG, Limits::S_ROLES, Limits::S_SWEPT, Limits::S_LOG, \ActiveSessions\Stdlib\Sessions::S_CLEANED] as $id) {
             $services->get('Omeka\Settings')->delete($id);
         }
         $services->get('Omeka\Connection')->executeStatement('DELETE FROM user_setting WHERE id = ?', [Limits::U_LIMIT]);
