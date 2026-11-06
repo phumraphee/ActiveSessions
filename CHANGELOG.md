@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 — 2026-11-06
+
+- A comment in the code rewritten in plain terms. No change in behaviour; no database change.
+
 ## 0.3.1 — 2026-11-02
 
 - **Sweep from cron**: `bin/sweep.php` ends every sign-in past its time and forgets old records

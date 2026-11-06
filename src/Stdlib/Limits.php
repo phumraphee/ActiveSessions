@@ -32,7 +32,7 @@ use Doctrine\DBAL\Connection;
  * THE LONGEST THE SERVER ALLOWS (ceiling()) is read as the site runs: the shorter of the
  * session's lifetime unused (gc_maxlifetime) and its cookie's (cookie_lifetime), as Omeka uses
  * them. Nothing is ever set past it: a choice longer than it is cut to it, and the page says
- * so (the owner, 2026-10-22: no "for ever"; find the most the server gives, and use that).
+ * so: there is no "for ever"; the most the server gives is used.
  * A device beats the person, the person beats the role. Nothing set = 0.2 exactly. Every
  * change is noted (setting activesessions_log, shown on the page).
  */
